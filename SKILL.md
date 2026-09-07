@@ -25,7 +25,13 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --dry-run
    ```
 
-   Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if unknown notifications, JSON errors, missing files, or insufficient padding are reported.
+   Use `--thread <thread-id>` for one session or `--name <text>` to match the visible session name/title literally:
+
+   ```powershell
+   node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --dry-run --name "关键词"
+   ```
+
+   The tool checks SQLite integrity and the required `threads` table schema before scanning. Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if schema/integrity checks, unknown notifications, JSON parsing, missing files, or padding checks fail.
 
 2. On explicit user authorization to mutate the local session store, run `--apply`. The tool creates a SQLite backup, compressed affected-line backups, a manifest, and reports. It checks hashes and file sizes before each write, writes replacements in place, validates all targets, and rolls back the affected session or the full run on failure.
 
@@ -34,6 +40,7 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
    ```
 
 3. After apply, confirm the report shows zero database old-provider rows, zero old provider headers, zero missing `call_id` notifications, zero unknown notifications, zero JSON errors, zero size mismatches, zero unchanged-region hash mismatches, and zero row mismatches.
+   JSON and HTML reports are written beside the manifest; the HTML file can be opened directly in a browser.
 
 4. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
 

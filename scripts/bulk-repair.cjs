@@ -21,6 +21,8 @@ const MODE = process.argv[2];
 const MANIFEST_ARG = process.argv[3];
 const THREAD_FLAG_INDEX = process.argv.indexOf('--thread');
 const THREAD_ID = THREAD_FLAG_INDEX >= 0 ? process.argv[THREAD_FLAG_INDEX + 1] : null;
+const NAME_FLAG_INDEX = process.argv.indexOf('--name');
+const NAME_FILTER = NAME_FLAG_INDEX >= 0 ? process.argv[NAME_FLAG_INDEX + 1] : null;
 const SUMMARY_ARG = process.argv[3];
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -30,6 +32,10 @@ function fail(message) {
 
 function log(message) {
   process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
+}
+
+function timestamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace('.000Z', 'Z');
 }
 
 function sha256(bytes) {
@@ -62,6 +68,18 @@ function sqliteIntegrity(database = DATABASE) {
   const result = rows.length === 1 ? rows[0].integrity_check : null;
   if (result !== 'ok') fail(`SQLite integrity_check 未通过：${JSON.stringify(rows)}`);
   return { ok: true, result: 'ok' };
+}
+
+function sqliteSchemaCheck(database = DATABASE) {
+  const columns = sqlite('PRAGMA table_info(threads);', database);
+  const names = new Set(columns.map((column) => column.name));
+  const required = ['id', 'rollout_path', 'model_provider', 'title', 'archived'];
+  const missing = required.filter((name) => !names.has(name));
+  const primaryKey = columns.find((column) => column.name === 'id');
+  if (missing.length || !primaryKey || primaryKey.pk !== 1) {
+    fail(`SQLite threads 表结构不符合预期：${JSON.stringify({ missing, primaryKey: primaryKey?.pk ?? null })}`);
+  }
+  return { ok: true, table: 'threads', columnCount: columns.length, required };
 }
 
 function backupDatabase(destination) {
@@ -111,10 +129,13 @@ function atomicJson(filePath, value) {
   fs.renameSync(temporary, filePath);
 }
 
-function getTargetRows(threadId = null) {
+function getTargetRows(threadId = null, nameFilter = null) {
   const filter = threadId ? ` AND id=${sqlQuote(threadId)}` : '';
+  const name = nameFilter
+    ? ` AND (instr(lower(COALESCE(name,'')), lower(${sqlQuote(nameFilter)})) > 0 OR instr(lower(COALESCE(title,'')), lower(${sqlQuote(nameFilter)})) > 0)`
+    : '';
   return sqlite(
-    `SELECT * FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)}${filter} ORDER BY id;`,
+    `SELECT * FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)}${filter}${name} ORDER BY id;`,
   );
 }
 
@@ -599,6 +620,7 @@ function markdownReport(report) {
     '',
     `- 执行时间：${report.completedAt || report.startedAt}`,
     `- 状态：${report.status}`,
+    `- 目标筛选：${report.selectedName || report.selectedThread || '全部未归档目标'}`,
     `- 目标会话：${s.targetThreads}`,
     `- 历史文件：${s.rolloutFiles}`,
     `- provider 文件头修复：${s.providerHeaderChanges}`,
@@ -622,7 +644,7 @@ function markdownReport(report) {
 function chineseSummary(report) {
   const p = report.preflight || {};
   const v = report.validation || {};
-  const selected = report.selectedThread || report.threadId || '全部未归档目标';
+  const selected = report.selectedName || report.selectedThread || report.threadId || '全部未归档目标';
   const lines = [
     `Codex 会话修复摘要：${report.status || '未知'}`,
     `目标范围：${selected}`,
@@ -641,6 +663,20 @@ function chineseSummary(report) {
   return lines.join('\n');
 }
 
+function htmlEscape(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function htmlReport(report) {
+  const title = `Codex 会话修复报告 - ${report.status || 'unknown'}`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${htmlEscape(title)}</title><style>body{font:15px system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 20px;color:#202124}h1{font-size:24px}pre{background:#f6f8fa;padding:16px;overflow:auto;border-radius:8px}table{border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:8px 16px 8px 0}</style><h1>${htmlEscape(title)}</h1><table><tr><td>模式</td><td>${htmlEscape(report.mode || '')}</td></tr><tr><td>目标范围</td><td>${htmlEscape(report.selectedName || report.selectedThread || '全部未归档目标')}</td></tr><tr><td>数据库完整性</td><td>${htmlEscape(report.databaseIntegrity?.result || 'ok')}</td></tr></table><pre>${htmlEscape(JSON.stringify(report, null, 2))}</pre></html>`;
+}
+
+function writeHtmlReport(filePath, report) {
+  fs.writeFileSync(filePath, htmlReport(report));
+  return filePath;
+}
+
 function runSummary(reportArgument) {
   if (!reportArgument) fail('--summary 必须提供报告 JSON 路径。');
   const report = JSON.parse(fs.readFileSync(path.resolve(reportArgument), 'utf8'));
@@ -650,7 +686,8 @@ function runSummary(reportArgument) {
 async function runDryRun() {
   const config = assertCustomProviderConfig();
   const databaseIntegrity = sqliteIntegrity();
-  const rows = getTargetRows(THREAD_ID);
+  const schema = sqliteSchemaCheck();
+  const rows = getTargetRows(THREAD_ID, NAME_FILTER);
   const discovered = await discoverFiles(rows);
   const { plans, summary } = await preflight(rows, discovered);
   const report = {
@@ -659,7 +696,9 @@ async function runDryRun() {
     checkedAt: new Date().toISOString(),
     config,
     selectedThread: THREAD_ID,
+    selectedName: NAME_FILTER,
     databaseIntegrity,
+    schema,
     preflight: summary,
     files: plans.map((plan) => ({
       path: plan.path,
@@ -672,6 +711,12 @@ async function runDryRun() {
       notifications: plan.notificationCount,
     })),
   };
+  fs.mkdirSync(path.join(SCRIPT_DIR, 'reports'), { recursive: true });
+  const reportStamp = timestamp();
+  report.reportPath = path.join(SCRIPT_DIR, 'reports', `dry-run-${reportStamp}.json`);
+  report.htmlReportPath = path.join(SCRIPT_DIR, 'reports', `dry-run-${reportStamp}.html`);
+  atomicJson(report.reportPath, report);
+  writeHtmlReport(report.htmlReportPath, report);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
@@ -743,7 +788,8 @@ async function runApply() {
   const manifestPath = path.join(backupDirectory, 'manifest.json');
   const config = assertCustomProviderConfig();
   const databaseIntegrity = sqliteIntegrity();
-  const rows = getTargetRows(THREAD_ID);
+  const schema = sqliteSchemaCheck();
+  const rows = getTargetRows(THREAD_ID, NAME_FILTER);
   const discovered = await discoverFiles(rows);
   log(`最终范围：${rows.length} 个未归档旧 provider 会话，${discovered.length} 份历史文件。`);
   backupDatabase(path.join(backupDirectory, 'state-before.sqlite'));
@@ -761,7 +807,9 @@ async function runApply() {
     manifestPath,
     config,
     selectedThread: THREAD_ID,
+    selectedName: NAME_FILTER,
     databaseIntegrity,
+    schema,
     preflight: summary,
     targetRows: rows,
     files: plans,
@@ -845,12 +893,17 @@ async function runApply() {
     backupDirectory,
     manifestPath,
     selectedThread: manifest.selectedThread,
+    selectedName: manifest.selectedName,
     databaseIntegrity: manifest.databaseIntegrity,
+    schema: manifest.schema,
     preflight: manifest.preflight,
     validation: manifest.validation,
   };
   fs.writeFileSync(path.join(backupDirectory, 'repair-report.json'), JSON.stringify(report, null, 2));
   fs.writeFileSync(path.join(backupDirectory, '修复报告.md'), markdownReport(report));
+  report.htmlReportPath = path.join(backupDirectory, '修复报告.html');
+  writeHtmlReport(report.htmlReportPath, report);
+  fs.writeFileSync(path.join(backupDirectory, 'repair-report.json'), JSON.stringify(report, null, 2));
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
