@@ -19,6 +19,9 @@ const DATABASE = path.join(ROOT, 'state_5.sqlite');
 const SCRIPT_DIR = __dirname;
 const MODE = process.argv[2];
 const MANIFEST_ARG = process.argv[3];
+const THREAD_FLAG_INDEX = process.argv.indexOf('--thread');
+const THREAD_ID = THREAD_FLAG_INDEX >= 0 ? process.argv[THREAD_FLAG_INDEX + 1] : null;
+const SUMMARY_ARG = process.argv[3];
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 function fail(message) {
@@ -54,6 +57,13 @@ function sqliteExec(query, database = DATABASE) {
   ).trim();
 }
 
+function sqliteIntegrity(database = DATABASE) {
+  const rows = sqlite('PRAGMA integrity_check;', database);
+  const result = rows.length === 1 ? rows[0].integrity_check : null;
+  if (result !== 'ok') fail(`SQLite integrity_check 未通过：${JSON.stringify(rows)}`);
+  return { ok: true, result: 'ok' };
+}
+
 function backupDatabase(destination) {
   const normalized = destination.replaceAll('\\', '/').replaceAll("'", "''");
   execFileSync('sqlite3', ['-cmd', '.timeout 15000', DATABASE, `.backup '${normalized}'`], {
@@ -62,7 +72,7 @@ function backupDatabase(destination) {
   });
   const stat = fs.statSync(destination);
   if (!stat.isFile() || stat.size === 0) fail('SQLite 备份为空。');
-  sqlite('PRAGMA integrity_check;', destination);
+  sqliteIntegrity(destination);
 }
 
 function fileStat(filePath) {
@@ -101,9 +111,10 @@ function atomicJson(filePath, value) {
   fs.renameSync(temporary, filePath);
 }
 
-function getTargetRows() {
+function getTargetRows(threadId = null) {
+  const filter = threadId ? ` AND id=${sqlQuote(threadId)}` : '';
   return sqlite(
-    `SELECT * FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)} ORDER BY id;`,
+    `SELECT * FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)}${filter} ORDER BY id;`,
   );
 }
 
@@ -608,9 +619,38 @@ function markdownReport(report) {
   ].join('\n');
 }
 
+function chineseSummary(report) {
+  const p = report.preflight || {};
+  const v = report.validation || {};
+  const selected = report.selectedThread || report.threadId || '全部未归档目标';
+  const lines = [
+    `Codex 会话修复摘要：${report.status || '未知'}`,
+    `目标范围：${selected}`,
+    `目标会话：${p.targetThreads ?? v.targetThreads ?? 0}`,
+    `历史文件：${p.rolloutFiles ?? 0}`,
+    `provider 文件头修复：${p.providerHeaderChanges ?? 0}`,
+    `缺失 call_id 通知修复：${p.missingCallIdNotifications ?? v.missingCallIdNotifications ?? 0}`,
+    `JSON 错误：${p.jsonErrors ?? v.jsonErrors ?? 0}`,
+    `数据库完整性：${report.databaseIntegrity?.result || '已通过'}`,
+  ];
+  if (report.mode === 'apply') {
+    lines.push(`修复后残留旧 provider：${v.databaseOldProviderCount ?? '未验证'}`);
+    lines.push(`文件大小异常：${v.sizeMismatches ?? '未验证'}`);
+    lines.push(`未修改区域异常：${v.unchangedHashMismatches ?? '未验证'}`);
+  }
+  return lines.join('\n');
+}
+
+function runSummary(reportArgument) {
+  if (!reportArgument) fail('--summary 必须提供报告 JSON 路径。');
+  const report = JSON.parse(fs.readFileSync(path.resolve(reportArgument), 'utf8'));
+  process.stdout.write(`${chineseSummary(report)}\n`);
+}
+
 async function runDryRun() {
   const config = assertCustomProviderConfig();
-  const rows = getTargetRows();
+  const databaseIntegrity = sqliteIntegrity();
+  const rows = getTargetRows(THREAD_ID);
   const discovered = await discoverFiles(rows);
   const { plans, summary } = await preflight(rows, discovered);
   const report = {
@@ -618,6 +658,8 @@ async function runDryRun() {
     status: 'ready',
     checkedAt: new Date().toISOString(),
     config,
+    selectedThread: THREAD_ID,
+    databaseIntegrity,
     preflight: summary,
     files: plans.map((plan) => ({
       path: plan.path,
@@ -700,7 +742,8 @@ async function runApply() {
   fs.mkdirSync(backupDirectory, { recursive: false });
   const manifestPath = path.join(backupDirectory, 'manifest.json');
   const config = assertCustomProviderConfig();
-  const rows = getTargetRows();
+  const databaseIntegrity = sqliteIntegrity();
+  const rows = getTargetRows(THREAD_ID);
   const discovered = await discoverFiles(rows);
   log(`最终范围：${rows.length} 个未归档旧 provider 会话，${discovered.length} 份历史文件。`);
   backupDatabase(path.join(backupDirectory, 'state-before.sqlite'));
@@ -717,6 +760,8 @@ async function runApply() {
     backupDirectory,
     manifestPath,
     config,
+    selectedThread: THREAD_ID,
+    databaseIntegrity,
     preflight: summary,
     targetRows: rows,
     files: plans,
@@ -799,6 +844,8 @@ async function runApply() {
     toolPath: manifest.toolPath,
     backupDirectory,
     manifestPath,
+    selectedThread: manifest.selectedThread,
+    databaseIntegrity: manifest.databaseIntegrity,
     preflight: manifest.preflight,
     validation: manifest.validation,
   };
@@ -848,9 +895,9 @@ async function runRollback(manifestArgument) {
 }
 
 async function main() {
-  if (!['--dry-run', '--apply', '--rollback'].includes(MODE)) {
+  if (!['--dry-run', '--apply', '--rollback', '--summary'].includes(MODE)) {
     process.stderr.write(
-      '用法：node bulk-repair.cjs --dry-run | --apply | --rollback <manifest.json>\n',
+      '用法：node bulk-repair.cjs --dry-run [--thread <id>] | --apply [--thread <id>] | --rollback <manifest.json> | --summary <report.json>\n',
     );
     process.exitCode = 2;
     return;
@@ -858,7 +905,8 @@ async function main() {
   if (!fs.existsSync(DATABASE)) fail(`数据库不存在：${DATABASE}`);
   if (MODE === '--dry-run') await runDryRun();
   else if (MODE === '--apply') await runApply();
-  else await runRollback(MANIFEST_ARG);
+  else if (MODE === '--rollback') await runRollback(MANIFEST_ARG);
+  else runSummary(SUMMARY_ARG);
 }
 
 main().catch((error) => {
