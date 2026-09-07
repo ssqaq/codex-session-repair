@@ -1,6 +1,6 @@
 # Codex Session Repair
 
-Version: `1.5.0`
+Version: `1.6.0`
 
 Codex Skill for safely repairing unarchived local sessions affected by the legacy `codex_local_access` provider or recognized missing-`call_id` heartbeat and cross-session notifications. It repairs both the API `function_call_output` record and the matching `FunctionCallOutput` event record when both are present.
 
@@ -64,6 +64,8 @@ node .\scripts\sync-projection.cjs --apply --thread <thread-id>
 node .\scripts\sync-projection.cjs --rollback .\projection-run-...\manifest.json
 ```
 
-The tool reads `CODEX_ROOT` when set and otherwise uses the standard Windows Codex home. Without a selector it targets `archived=0` rows whose provider is `codex_local_access`. An explicit `--thread` or `--name` selector may also target an unarchived `custom` session to repair recognized missing-`call_id` records while leaving its provider unchanged.
+修完 JSONL 和分页缓存后，还要检查运行态：运行 `node .\\scripts\\diagnose-runtime.cjs --thread <thread-id>`。如果静态检查全绿，但最新 turn 仍是 `function_call_output requires call_id` 或 `previous_response_id`，说明当前 Codex 进程里的续接状态坏了；先切走会话再切回，仍复现就重启 Codex 或从已完成历史 fork 新 task，不要继续重复改 JSONL。如果错误是 `servers are currently overloaded`，说明中转站过载，等服务恢复后重试。只有静态检查和真实续聊都通过，才算修复完成。
 
 Do not commit local Codex databases, rollout JSONL files, configuration files, API keys, manifests containing history, or backup directories.
+
+工具读取 `CODEX_ROOT`（未设置时使用标准 Codex 目录），默认只处理未归档的 `codex_local_access`；明确指定会话时也可检查 `custom`。

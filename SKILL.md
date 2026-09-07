@@ -1,11 +1,11 @@
 ---
 name: codex-session-repair
-description: Safely inspect and repair unarchived Codex session provider and missing call_id errors with dry-run, backups, rollback, and byte-preserving verification. Use for local Codex session maintenance; do not use for archived sessions or unrelated project code.
+description: Safely inspect, repair, and verify unarchived Codex session provider, missing call_id, stale projection, and poisoned continuation-state errors with dry-run, backups, rollback, and runtime diagnosis. Use for local Codex session maintenance; do not use for archived sessions or unrelated project code.
 ---
 
 # Codex Session Repair
 
-Use this skill when Codex history shows provider errors involving `codex_local_access`, missing `call_id` heartbeat or cross-session notifications, stale paginated-history cache entries, or when the user asks to repair all affected unarchived sessions.
+Use this skill when Codex history shows provider errors involving `codex_local_access`, missing `call_id` heartbeat or cross-session notifications, stale paginated-history cache entries, repeated `previous_response_id` continuation failures after static repair, or when the user asks to repair and verify affected unarchived sessions.
 
 ## Scope and invariants
 
@@ -17,6 +17,7 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
 - Keep the paginated projection (`thread_history_1.sqlite`) consistent with those in-place JSONL rewrites. Only the matching `functionCallOutput` projection rows are changed to the corresponding `userMessage` item; create a projection backup and manifest before writing.
 - Require `[model_providers.custom]`, `model_provider="custom"`, and `wire_api="responses"` in `config.toml` before any apply.
 - Do not modify `config.toml` during repair. Do not repair archived sessions.
+- A clean JSONL/projection scan does not prove that a live Codex task is usable. Always classify the latest real turn as data corruption, poisoned runtime continuation state, or upstream overload.
 
 ## Procedure
 
@@ -58,13 +59,15 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\sync-projection.cjs" --rollback "<projection-manifest.json>"
    ```
 
-5. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
+5. Diagnose the live continuation state before declaring success. Run `diagnose-runtime.cjs --thread <THREAD_ID>` after the static checks. If the latest turn is `call_id_continuation`, reload the Codex runtime by navigating away and back and perform one real no-tool continuation test. If the same error repeats, fork the completed history into a new task or restart the Codex desktop process; do not keep rewriting clean history. If the latest error is `upstream_overloaded`, wait and retry; it is not a local history repair failure. A repair is complete only when static checks and a real continuation test both pass.
+
+6. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
 
    ```powershell
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --rollback "<manifest.json>"
    ```
 
-6. Keep all reports and backups local. Never commit `state_5.sqlite`, `thread_history_1.sqlite`, rollout JSONL files, manifests containing history, `config.toml`, API keys, or backup directories to a repository.
+7. Keep all reports and backups local. Never commit `state_5.sqlite`, `thread_history_1.sqlite`, rollout JSONL files, manifests containing history, `config.toml`, API keys, or backup directories to a repository.
 
 ## Boundaries
 
