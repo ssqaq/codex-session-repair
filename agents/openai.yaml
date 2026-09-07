@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Session Repair"
+  short_description: "Repair archived-free Codex session provider and call_id errors"
+  default_prompt: "Use $codex-session-repair to safely inspect and repair affected unarchived Codex sessions with dry-run, backup, rollback, and verification."

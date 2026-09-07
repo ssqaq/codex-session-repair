@@ -1,0 +1,8 @@
+state_*.sqlite
+config.toml
+sessions/
+archived_sessions/
+backups/
+run-*/
+*.jsonl
+*.log
