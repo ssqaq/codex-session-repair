@@ -31,7 +31,9 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --dry-run --name "关键词"
    ```
 
-   The tool checks SQLite integrity and the required `threads` table schema before scanning. Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if schema/integrity checks, unknown notifications, JSON parsing, missing files, or padding checks fail.
+   名称筛选也可以直接用于正式修复：`node ... --apply --name "关键词"`。执行前仍会完整预检，并在报告中记录匹配范围。
+
+   The tool checks SQLite integrity, the required `threads` table schema, and indexes covering `archived` and `model_provider` before scanning. Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if schema/integrity/index checks, unknown notifications, JSON parsing, missing files, or padding checks fail.
 
 2. On explicit user authorization to mutate the local session store, run `--apply`. The tool creates a SQLite backup, compressed affected-line backups, a manifest, and reports. It checks hashes and file sizes before each write, writes replacements in place, validates all targets, and rolls back the affected session or the full run on failure.
 

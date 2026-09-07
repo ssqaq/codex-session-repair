@@ -82,6 +82,20 @@ function sqliteSchemaCheck(database = DATABASE) {
   return { ok: true, table: 'threads', columnCount: columns.length, required };
 }
 
+function sqliteIndexCheck(database = DATABASE) {
+  const indexes = sqlite('PRAGMA index_list(threads);', database).map((index) => {
+    const columns = sqlite(`PRAGMA index_info(${sqlQuote(index.name)});`, database)
+      .sort((left, right) => left.seqno - right.seqno)
+      .map((column) => column.name);
+    return { name: index.name, unique: index.unique, origin: index.origin, columns };
+  });
+  const covers = (column) => indexes.some((index) => index.columns.includes(column));
+  const requiredColumns = ['archived', 'model_provider'];
+  const missing = requiredColumns.filter((column) => !covers(column));
+  if (missing.length) fail(`SQLite threads 表缺少关键索引列：${missing.join(', ')}`);
+  return { ok: true, table: 'threads', indexCount: indexes.length, requiredColumns, indexes };
+}
+
 function backupDatabase(destination) {
   const normalized = destination.replaceAll('\\', '/').replaceAll("'", "''");
   execFileSync('sqlite3', ['-cmd', '.timeout 15000', DATABASE, `.backup '${normalized}'`], {
@@ -654,6 +668,7 @@ function chineseSummary(report) {
     `缺失 call_id 通知修复：${p.missingCallIdNotifications ?? v.missingCallIdNotifications ?? 0}`,
     `JSON 错误：${p.jsonErrors ?? v.jsonErrors ?? 0}`,
     `数据库完整性：${report.databaseIntegrity?.result || '已通过'}`,
+    `关键索引检查：${(report.indexes || v.indexes)?.ok ? '通过' : '未验证'}`,
   ];
   if (report.mode === 'apply') {
     lines.push(`修复后残留旧 provider：${v.databaseOldProviderCount ?? '未验证'}`);
@@ -687,6 +702,7 @@ async function runDryRun() {
   const config = assertCustomProviderConfig();
   const databaseIntegrity = sqliteIntegrity();
   const schema = sqliteSchemaCheck();
+  const indexes = sqliteIndexCheck();
   const rows = getTargetRows(THREAD_ID, NAME_FILTER);
   const discovered = await discoverFiles(rows);
   const { plans, summary } = await preflight(rows, discovered);
@@ -699,6 +715,7 @@ async function runDryRun() {
     selectedName: NAME_FILTER,
     databaseIntegrity,
     schema,
+    indexes,
     preflight: summary,
     files: plans.map((plan) => ({
       path: plan.path,
@@ -722,6 +739,9 @@ async function runDryRun() {
 
 async function validateApply(manifest) {
   log('开始全量验证。');
+  const databaseIntegrity = sqliteIntegrity();
+  const schema = sqliteSchemaCheck();
+  const indexes = sqliteIndexCheck();
   const oldProviderRows = sqlite(
     `SELECT COUNT(*) AS count FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)};`,
   )[0].count;
@@ -760,6 +780,9 @@ async function validateApply(manifest) {
     plan.afterSha256 = current.beforeSha256;
   }
   const validation = {
+    databaseIntegrity,
+    schema,
+    indexes,
     databaseOldProviderCount: oldProviderRows,
     oldProviderHeaders,
     providerHeaders,
@@ -789,6 +812,7 @@ async function runApply() {
   const config = assertCustomProviderConfig();
   const databaseIntegrity = sqliteIntegrity();
   const schema = sqliteSchemaCheck();
+  const indexes = sqliteIndexCheck();
   const rows = getTargetRows(THREAD_ID, NAME_FILTER);
   const discovered = await discoverFiles(rows);
   log(`最终范围：${rows.length} 个未归档旧 provider 会话，${discovered.length} 份历史文件。`);
@@ -810,6 +834,7 @@ async function runApply() {
     selectedName: NAME_FILTER,
     databaseIntegrity,
     schema,
+    indexes,
     preflight: summary,
     targetRows: rows,
     files: plans,
@@ -896,6 +921,7 @@ async function runApply() {
     selectedName: manifest.selectedName,
     databaseIntegrity: manifest.databaseIntegrity,
     schema: manifest.schema,
+    indexes: manifest.indexes,
     preflight: manifest.preflight,
     validation: manifest.validation,
   };

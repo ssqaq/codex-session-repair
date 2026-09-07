@@ -1,6 +1,6 @@
 # Codex Session Repair
 
-Version: `1.2.0`
+Version: `1.3.0`
 
 Codex Skill for safely repairing unarchived local sessions affected by the legacy `codex_local_access` provider or recognized missing-`call_id` heartbeat and cross-session notifications.
 
@@ -24,6 +24,12 @@ node .\scripts\bulk-repair.cjs --dry-run --thread <thread-id>
 node .\scripts\bulk-repair.cjs --dry-run --name "关键词"
 ```
 
+按名称直接修复：
+
+```powershell
+node .\scripts\bulk-repair.cjs --apply --name "关键词"
+```
+
 After reviewing the preflight and explicitly authorizing the local mutation:
 
 ```powershell
@@ -43,7 +49,7 @@ node .\scripts\bulk-repair.cjs --summary .\run-...\repair-report.json
 ```
 
 每次 dry-run 和 apply 都会先执行 SQLite `PRAGMA integrity_check`；检查不通过会立即停止。
-同时会检查 `threads` 表是否包含必要字段和主键。apply 完成后会生成 Markdown、JSON 和 HTML 报告。
+同时会检查 `threads` 表是否包含必要字段和主键，以及 `archived`、`model_provider` 关键索引。apply 完成后会生成 Markdown、JSON 和 HTML 报告。
 
 The tool reads `CODEX_ROOT` when set and otherwise uses the standard Windows Codex home. It only targets `archived=0` rows whose provider is `codex_local_access`.
 
