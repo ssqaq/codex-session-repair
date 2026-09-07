@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex 修复会话报错"
-  short_description: "修复 Codex 未归档会话报错并验证是否真的恢复"
-  default_prompt: "使用 $codex-session-repair 检查并修复 Codex 未归档会话报错，自动备份、回滚并做真实续聊验证；跳过 plugin 401 登录问题。"
+  short_description: "修复会话报错，安全删除归档会话并清理重复备份"
+  default_prompt: "使用 $codex-session-repair 检查并修复 Codex 会话报错，安全删除归档会话，每个会话保留最新回滚备份并清理旧副本；跳过 plugin 401 登录问题。"

@@ -1,6 +1,6 @@
 ---
 name: codex-session-repair
-description: 修复 Codex 未归档会话报错：旧 provider、缺少 call_id、分页缓存残留、续聊状态错误和中转站过载。自动检查、备份、修复、回滚并做真实续聊验证。只要用户提到 Codex 会话报错、续聊失败、function_call_output、previous_response_id，或要求批量修复未归档会话，就使用这个 Skill；不处理 plugin 401 登录问题、归档会话或项目代码。
+description: 修复和清理 Codex 会话：未归档会话的旧 provider、缺少 call_id、分页缓存残留、续聊状态错误，以及归档会话安全删除和重复回滚备份清理。自动检查、备份、修复、回滚并做真实续聊验证。只要用户提到 Codex 会话报错、续聊失败、function_call_output、previous_response_id、删除归档会话或清理重复备份，就使用这个 Skill；不处理 plugin 401 登录问题或项目代码。
 ---
 
 # Codex 修复会话报错
@@ -17,6 +17,35 @@ description: 修复 Codex 未归档会话报错：旧 provider、缺少 call_id�
 | `functionCallOutput` 出现在分页缓存里 | 同步 `thread_history_1.sqlite` 投影缓存。 |
 | `servers are currently overloaded` | 中转站过载，等待后重试，不继续改历史。 |
 | `plugin 401` | 这是登录问题；本 Skill 不登录、不索要账号，直接跳过。 |
+
+## 清理归档会话和重复备份
+
+删除归档会话前先预览范围：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\delete-archived.cjs" --dry-run
+```
+
+确认数量和范围后再删除。工具只处理 `archived=1`，会先备份数据库、分页缓存、索引和归档历史；删除后立即验证，失败会自动恢复：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\delete-archived.cjs" --apply
+```
+
+需要撤销时使用删除报告里的 manifest：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\delete-archived.cjs" --rollback "<archived-delete-manifest.json>"
+```
+
+修复备份会按会话去重：每个会话保留最新一份完整回滚备份，旧的重复备份和未完成备份只在 dry-run 列出，确认后再清理：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-backups.cjs" --dry-run
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-backups.cjs" --apply
+```
+
+清理工具只删除自身识别的 `run-*`、`projection-run-*` 和 `archived-delete-*` 旧备份目录，并为本次清理留下 manifest；不会碰会话数据库、历史文件或最新保留备份。
 
 ## Scope and invariants
 

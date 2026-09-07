@@ -4,5 +4,8 @@ sessions/
 archived_sessions/
 backups/
 run-*/
+projection-run-*/
+cleanup-run-*/
+archived-delete-*/
 *.jsonl
 *.log
