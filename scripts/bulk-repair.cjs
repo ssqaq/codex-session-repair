@@ -145,11 +145,12 @@ function atomicJson(filePath, value) {
 
 function getTargetRows(threadId = null, nameFilter = null) {
   const filter = threadId ? ` AND id=${sqlQuote(threadId)}` : '';
+  const provider = threadId ? '' : ` AND model_provider=${sqlQuote(OLD_PROVIDER)}`;
   const name = nameFilter
     ? ` AND (instr(lower(COALESCE(name,'')), lower(${sqlQuote(nameFilter)})) > 0 OR instr(lower(COALESCE(title,'')), lower(${sqlQuote(nameFilter)})) > 0)`
     : '';
   return sqlite(
-    `SELECT * FROM threads WHERE archived=0 AND model_provider=${sqlQuote(OLD_PROVIDER)}${filter}${name} ORDER BY id;`,
+    `SELECT * FROM threads WHERE archived=0${provider}${filter}${name} ORDER BY id;`,
   );
 }
 
@@ -222,7 +223,8 @@ async function discoverFiles(rows) {
 
 function normalizeNotifications(value, changes, location = '$') {
   if (!value || typeof value !== 'object') return;
-  if (value.type === 'function_call_output' && !value.call_id) {
+  const isFunctionCallOutput = value.type === 'function_call_output' || value.type === 'FunctionCallOutput';
+  if (isFunctionCallOutput && !value.call_id) {
     const output = value.output;
     const match = typeof output === 'string'
       ? output.match(/^\s*<(heartbeat|codex_delegation)>/)
@@ -237,15 +239,24 @@ function normalizeNotifications(value, changes, location = '$') {
       return;
     }
     const id = value.id;
+    const originalType = value.type;
     const metadata = value.internal_chat_message_metadata_passthrough;
     const originalName = value.name ?? null;
     for (const key of Object.keys(value)) delete value[key];
-    Object.assign(value, {
-      type: 'message',
-      id,
-      role: 'user',
-      content: [{ type: 'input_text', text: output }],
-    });
+    if (originalType === 'FunctionCallOutput') {
+      Object.assign(value, {
+        type: 'UserMessage',
+        id,
+        content: [{ type: 'text', text: output, text_elements: [] }],
+      });
+    } else {
+      Object.assign(value, {
+        type: 'message',
+        id,
+        role: 'user',
+        content: [{ type: 'input_text', text: output }],
+      });
+    }
     if (metadata !== undefined) {
       value.internal_chat_message_metadata_passthrough = metadata;
     }
@@ -559,7 +570,10 @@ function compareRows(beforeRows, afterRows) {
       mismatches.push({ id: before.id, reason: 'missing' });
       continue;
     }
-    const expected = { ...before, model_provider: NEW_PROVIDER };
+    const expected = {
+      ...before,
+      model_provider: before.model_provider === OLD_PROVIDER ? NEW_PROVIDER : before.model_provider,
+    };
     if (JSON.stringify(expected) !== JSON.stringify(after)) {
       const changedFields = Object.keys(expected).filter(
         (key) => JSON.stringify(expected[key]) !== JSON.stringify(after[key]),
@@ -815,7 +829,7 @@ async function runApply() {
   const indexes = sqliteIndexCheck();
   const rows = getTargetRows(THREAD_ID, NAME_FILTER);
   const discovered = await discoverFiles(rows);
-  log(`最终范围：${rows.length} 个未归档旧 provider 会话，${discovered.length} 份历史文件。`);
+  log(`最终范围：${rows.length} 个未归档目标会话，${discovered.length} 份历史文件。`);
   backupDatabase(path.join(backupDirectory, 'state-before.sqlite'));
   fs.writeFileSync(path.join(backupDirectory, 'database-rows-before.json'), JSON.stringify(rows, null, 2));
   const { plans, summary } = await preflight(rows, discovered, backupDirectory);
@@ -854,7 +868,7 @@ async function runApply() {
   for (const row of rows) {
     const threadPlans = plansByThread.get(row.id) || [];
     const currentRow = getCurrentRow(row.id);
-    if (!currentRow || currentRow.archived !== 0 || currentRow.model_provider !== OLD_PROVIDER) {
+    if (!currentRow || currentRow.archived !== 0 || ![OLD_PROVIDER, NEW_PROVIDER].includes(currentRow.model_provider)) {
       fail(`正式写入前数据库目标变化：${row.id}`);
     }
     const changed = [];
@@ -863,7 +877,9 @@ async function runApply() {
         if (plan.edits.length) changed.push(plan);
         await applyFile(plan, backupDirectory);
       }
-      updateThreadProvider(row.id, OLD_PROVIDER, NEW_PROVIDER);
+      if (row.model_provider === OLD_PROVIDER) {
+        updateThreadProvider(row.id, OLD_PROVIDER, NEW_PROVIDER);
+      }
       manifest.appliedThreadIds.push(row.id);
       completed++;
       if (completed === 1 || completed % 25 === 0 || completed === rows.length) {
@@ -876,7 +892,7 @@ async function runApply() {
         await restoreFile(plan, backupDirectory, plan.afterSha256);
       }
       const dbRow = getCurrentRow(row.id);
-      if (dbRow?.model_provider === NEW_PROVIDER) {
+      if (row.model_provider === OLD_PROVIDER && dbRow?.model_provider === NEW_PROVIDER) {
         updateThreadProvider(row.id, NEW_PROVIDER, OLD_PROVIDER);
       }
       manifest.status = 'failed-and-thread-rolled-back';
@@ -896,10 +912,12 @@ async function runApply() {
       if (!plan.edits.length) continue;
       await restoreFile(plan, backupDirectory, plan.afterSha256 || null);
     }
-    const rollbackStatements = rows.map((row) =>
-      `UPDATE threads SET model_provider=${sqlQuote(row.model_provider)} ` +
-      `WHERE id=${sqlQuote(row.id)} AND model_provider=${sqlQuote(NEW_PROVIDER)}`,
-    );
+    const rollbackStatements = rows
+      .filter((row) => row.model_provider === OLD_PROVIDER)
+      .map((row) =>
+        `UPDATE threads SET model_provider=${sqlQuote(row.model_provider)} ` +
+        `WHERE id=${sqlQuote(row.id)} AND model_provider=${sqlQuote(NEW_PROVIDER)}`,
+      );
     sqliteExec(`BEGIN IMMEDIATE; ${rollbackStatements.join('; ')}; COMMIT;`);
     manifest.status = 'validation-failed-and-rolled-back';
     manifest.failure = { message: error.stack || error.message };
@@ -950,6 +968,10 @@ async function runRollback(manifestArgument) {
   for (const row of manifest.targetRows) {
     const current = getCurrentRow(row.id);
     if (!current) fail(`回滚时数据库行缺失：${row.id}`);
+    if (row.model_provider !== OLD_PROVIDER) {
+      if (current.model_provider !== row.model_provider) fail(`回滚时 custom 会话 provider 已被另行修改：${row.id}`);
+      continue;
+    }
     if (current.model_provider === row.model_provider) continue;
     if (current.model_provider !== NEW_PROVIDER) fail(`回滚时 provider 已被另行修改：${row.id}`);
     rollbackStatements.push(

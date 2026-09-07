@@ -10,10 +10,10 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
 ## Scope and invariants
 
 - Work only on the local Codex home (`CODEX_ROOT`, default `C:\\Users\\Administrator\\.codex`). Never touch project source code.
-- The target set is re-read from `state_5.sqlite` at execution time: `archived=0 AND model_provider='codex_local_access'`.
+- Without a selector, the target set is re-read from `state_5.sqlite` at execution time: `archived=0 AND model_provider='codex_local_access'`. With explicit `--thread` or `--name`, an unarchived `custom` session is also eligible so recognized missing-`call_id` notifications can be repaired without changing its provider.
 - Keep model, title, directory, timestamps, archive state, ordinary messages, and all unmodified bytes unchanged.
-- Change the database provider to `custom` only after the history preflight succeeds and only for the target rows.
-- Rewrite only recognized missing-`call_id` heartbeat or cross-session notification records as ordinary user history messages. Preserve message IDs, notification text, and internal metadata; never invent a `call_id`.
+- For old-provider targets, change the database provider to `custom` only after the history preflight succeeds; explicitly selected `custom` targets keep their provider.
+- Rewrite only recognized missing-`call_id` heartbeat or cross-session notification records, including their `function_call_output`/`FunctionCallOutput` event representations, as ordinary user history messages. Preserve message IDs, notification text, and internal metadata; never invent a `call_id`.
 - Require `[model_providers.custom]`, `model_provider="custom"`, and `wire_api="responses"` in `config.toml` before any apply.
 - Do not modify `config.toml` during repair. Do not repair archived sessions.
 
@@ -33,7 +33,7 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
 
    名称筛选也可以直接用于正式修复：`node ... --apply --name "关键词"`。执行前仍会完整预检，并在报告中记录匹配范围。
 
-   The tool checks SQLite integrity, the required `threads` table schema, and indexes covering `archived` and `model_provider` before scanning. Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if schema/integrity/index checks, unknown notifications, JSON parsing, missing files, or padding checks fail.
+   The tool checks SQLite integrity, the required `threads` table schema, and indexes covering `archived` and `model_provider` before scanning. Review target count, files, provider headers, recognized notifications, JSON errors, and minimum padding slack. Stop if schema/integrity/index checks, unknown notifications, JSON parsing, missing files, or padding checks fail. An explicitly selected `custom` session keeps its provider; only its recognized missing-`call_id` records are rewritten.
 
 2. On explicit user authorization to mutate the local session store, run `--apply`. The tool creates a SQLite backup, compressed affected-line backups, a manifest, and reports. It checks hashes and file sizes before each write, writes replacements in place, validates all targets, and rolls back the affected session or the full run on failure.
 
