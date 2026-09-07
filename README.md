@@ -1,5 +1,7 @@
 # Codex Session Repair
 
+Version: `1.0.0`
+
 Codex Skill for safely repairing unarchived local sessions affected by the legacy `codex_local_access` provider or recognized missing-`call_id` heartbeat and cross-session notifications.
 
 ## Usage
