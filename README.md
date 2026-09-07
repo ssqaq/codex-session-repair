@@ -1,6 +1,6 @@
 # Codex 修复会话报错
 
-Version: `1.7.0`
+Version: `1.8.0`
 
 这是一个用来修复和清理 Codex 会话的 Skill。它会先检查，再备份和处理，最后验证结果。
 
@@ -13,8 +13,24 @@ Version: `1.7.0`
 - 判断 `servers are currently overloaded` 是否只是中转站过载
 - 安全删除归档会话
 - 每个会话只保留最新回滚备份，清理旧的重复坏备份
+- 一条命令扫描全部未归档会话并输出中文短报告
 
 不处理 `plugin 401`。这个错误需要登录账号，按用户要求直接跳过。
+
+## 一条命令检查全部会话
+
+```powershell
+node .\scripts\health-check.cjs
+```
+
+它会检查全部未归档会话、归档残留和重复备份。屏幕只显示关键数字，完整结果保存在 `scripts/reports/`。健康检查全程只读。
+
+```powershell
+node .\scripts\health-check.cjs --json
+node .\scripts\health-check.cjs --summary "<health-report.json>"
+```
+
+退出码 `0` 表示正常，`2` 表示发现待处理项，`1` 表示检查本身失败。
 
 ## 最短操作
 
@@ -22,6 +38,12 @@ Version: `1.7.0`
 
 ```powershell
 node .\scripts\bulk-repair.cjs --dry-run
+```
+
+扫描全部未归档会话，包括已经使用 `custom` 的会话：
+
+```powershell
+node .\scripts\bulk-repair.cjs --dry-run --all-unarchived
 ```
 
 确认报告没有错误后，修复全部未归档的旧 provider 会话：

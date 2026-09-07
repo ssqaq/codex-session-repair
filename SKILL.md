@@ -1,11 +1,27 @@
 ---
 name: codex-session-repair
-description: 修复和清理 Codex 会话：未归档会话的旧 provider、缺少 call_id、分页缓存残留、续聊状态错误，以及归档会话安全删除和重复回滚备份清理。自动检查、备份、修复、回滚并做真实续聊验证。只要用户提到 Codex 会话报错、续聊失败、function_call_output、previous_response_id、删除归档会话或清理重复备份，就使用这个 Skill；不处理 plugin 401 登录问题或项目代码。
+description: 检查、修复和清理 Codex 会话：一条命令扫描全部未归档会话并输出中文短报告，修复旧 provider、缺少 call_id、分页缓存和续聊状态错误，安全删除归档会话并清理重复回滚备份。用户提到 Codex 会话报错、全量检查、续聊失败、function_call_output、previous_response_id、删除归档会话或清理重复备份时使用；不处理 plugin 401 登录问题或项目代码。
 ---
 
 # Codex 修复会话报错
 
 这个 Skill 专门修复 Codex 左侧未归档会话里的常见报错。它会先检查，再备份和修改，最后真实续聊验证；只做静态扫描不算修好。
+
+## 一条命令检查全部会话
+
+优先使用统一健康检查。它会扫描全部未归档会话，同时检查归档残留和重复备份；默认只输出短中文摘要，完整报告保存在 `scripts/reports/`：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\health-check.cjs"
+```
+
+需要机器读取的完整结果时加 `--json`。重新显示已有报告的中文摘要时使用：
+
+```powershell
+node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\health-check.cjs" --summary "<health-report.json>"
+```
+
+健康检查只读。退出码 `0` 表示正常，`2` 表示发现待处理项，`1` 表示检查失败。
 
 ## 看到什么报错怎么处理
 
@@ -65,6 +81,12 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-b
 
    ```powershell
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --dry-run
+   ```
+
+   To audit every unarchived session, including sessions already on `custom`, use:
+
+   ```powershell
+   node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --dry-run --all-unarchived
    ```
 
    Use `--thread <thread-id>` for one session or `--name <text>` to match the visible session name/title literally:

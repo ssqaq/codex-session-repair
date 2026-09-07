@@ -23,6 +23,7 @@ const THREAD_FLAG_INDEX = process.argv.indexOf('--thread');
 const THREAD_ID = THREAD_FLAG_INDEX >= 0 ? process.argv[THREAD_FLAG_INDEX + 1] : null;
 const NAME_FLAG_INDEX = process.argv.indexOf('--name');
 const NAME_FILTER = NAME_FLAG_INDEX >= 0 ? process.argv[NAME_FLAG_INDEX + 1] : null;
+const ALL_UNARCHIVED = process.argv.includes('--all-unarchived');
 const SUMMARY_ARG = process.argv[3];
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -143,9 +144,9 @@ function atomicJson(filePath, value) {
   fs.renameSync(temporary, filePath);
 }
 
-function getTargetRows(threadId = null, nameFilter = null) {
+function getTargetRows(threadId = null, nameFilter = null, allUnarchived = false) {
   const filter = threadId ? ` AND id=${sqlQuote(threadId)}` : '';
-  const provider = threadId ? '' : ` AND model_provider=${sqlQuote(OLD_PROVIDER)}`;
+  const provider = threadId || allUnarchived ? '' : ` AND model_provider=${sqlQuote(OLD_PROVIDER)}`;
   const name = nameFilter
     ? ` AND (instr(lower(COALESCE(name,'')), lower(${sqlQuote(nameFilter)})) > 0 OR instr(lower(COALESCE(title,'')), lower(${sqlQuote(nameFilter)})) > 0)`
     : '';
@@ -607,6 +608,7 @@ function summarizePlans(rows, plans) {
   }
   return {
     targetThreads: rows.length,
+    oldProviderDatabaseRows: rows.filter((row) => row.model_provider === OLD_PROVIDER).length,
     rolloutFiles: plans.length,
     totalBytes,
     providerHeaders,
@@ -648,7 +650,7 @@ function markdownReport(report) {
     '',
     `- 执行时间：${report.completedAt || report.startedAt}`,
     `- 状态：${report.status}`,
-    `- 目标筛选：${report.selectedName || report.selectedThread || '全部未归档目标'}`,
+    `- 目标筛选：${targetLabel(report)}`,
     `- 目标会话：${s.targetThreads}`,
     `- 历史文件：${s.rolloutFiles}`,
     `- provider 文件头修复：${s.providerHeaderChanges}`,
@@ -672,7 +674,7 @@ function markdownReport(report) {
 function chineseSummary(report) {
   const p = report.preflight || {};
   const v = report.validation || {};
-  const selected = report.selectedName || report.selectedThread || report.threadId || '全部未归档目标';
+  const selected = targetLabel(report);
   const lines = [
     `Codex 会话修复摘要：${report.status || '未知'}`,
     `目标范围：${selected}`,
@@ -692,13 +694,18 @@ function chineseSummary(report) {
   return lines.join('\n');
 }
 
+function targetLabel(report) {
+  if (report.selectedAllUnarchived) return '全部未归档会话';
+  return report.selectedName || report.selectedThread || report.threadId || '全部旧 provider 会话';
+}
+
 function htmlEscape(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
 function htmlReport(report) {
   const title = `Codex 会话修复报告 - ${report.status || 'unknown'}`;
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${htmlEscape(title)}</title><style>body{font:15px system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 20px;color:#202124}h1{font-size:24px}pre{background:#f6f8fa;padding:16px;overflow:auto;border-radius:8px}table{border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:8px 16px 8px 0}</style><h1>${htmlEscape(title)}</h1><table><tr><td>模式</td><td>${htmlEscape(report.mode || '')}</td></tr><tr><td>目标范围</td><td>${htmlEscape(report.selectedName || report.selectedThread || '全部未归档目标')}</td></tr><tr><td>数据库完整性</td><td>${htmlEscape(report.databaseIntegrity?.result || 'ok')}</td></tr></table><pre>${htmlEscape(JSON.stringify(report, null, 2))}</pre></html>`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${htmlEscape(title)}</title><style>body{font:15px system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 20px;color:#202124}h1{font-size:24px}pre{background:#f6f8fa;padding:16px;overflow:auto;border-radius:8px}table{border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:8px 16px 8px 0}</style><h1>${htmlEscape(title)}</h1><table><tr><td>模式</td><td>${htmlEscape(report.mode || '')}</td></tr><tr><td>目标范围</td><td>${htmlEscape(targetLabel(report))}</td></tr><tr><td>数据库完整性</td><td>${htmlEscape(report.databaseIntegrity?.result || 'ok')}</td></tr></table><pre>${htmlEscape(JSON.stringify(report, null, 2))}</pre></html>`;
 }
 
 function writeHtmlReport(filePath, report) {
@@ -717,7 +724,7 @@ async function runDryRun() {
   const databaseIntegrity = sqliteIntegrity();
   const schema = sqliteSchemaCheck();
   const indexes = sqliteIndexCheck();
-  const rows = getTargetRows(THREAD_ID, NAME_FILTER);
+  const rows = getTargetRows(THREAD_ID, NAME_FILTER, ALL_UNARCHIVED);
   const discovered = await discoverFiles(rows);
   const { plans, summary } = await preflight(rows, discovered);
   const report = {
@@ -727,6 +734,7 @@ async function runDryRun() {
     config,
     selectedThread: THREAD_ID,
     selectedName: NAME_FILTER,
+    selectedAllUnarchived: ALL_UNARCHIVED,
     databaseIntegrity,
     schema,
     indexes,
@@ -818,6 +826,7 @@ async function validateApply(manifest) {
 }
 
 async function runApply() {
+  if (ALL_UNARCHIVED) fail('--all-unarchived 是全量只读检查参数，不能和 --apply 一起使用。');
   const startedAt = new Date().toISOString();
   const runName = `run-${startedAt.replaceAll(':', '').replaceAll('-', '').replace('.000Z', 'Z')}`;
   const backupDirectory = path.join(SCRIPT_DIR, runName);
@@ -827,7 +836,7 @@ async function runApply() {
   const databaseIntegrity = sqliteIntegrity();
   const schema = sqliteSchemaCheck();
   const indexes = sqliteIndexCheck();
-  const rows = getTargetRows(THREAD_ID, NAME_FILTER);
+  const rows = getTargetRows(THREAD_ID, NAME_FILTER, false);
   const discovered = await discoverFiles(rows);
   log(`最终范围：${rows.length} 个未归档目标会话，${discovered.length} 份历史文件。`);
   backupDatabase(path.join(backupDirectory, 'state-before.sqlite'));
@@ -998,7 +1007,7 @@ async function runRollback(manifestArgument) {
 async function main() {
   if (!['--dry-run', '--apply', '--rollback', '--summary'].includes(MODE)) {
     process.stderr.write(
-      '用法：node bulk-repair.cjs --dry-run [--thread <id>] | --apply [--thread <id>] | --rollback <manifest.json> | --summary <report.json>\n',
+      '用法：node bulk-repair.cjs --dry-run [--all-unarchived | --thread <id> | --name <text>] | --apply [--thread <id> | --name <text>] | --rollback <manifest.json> | --summary <report.json>\n',
     );
     process.exitCode = 2;
     return;
