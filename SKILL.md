@@ -5,7 +5,7 @@ description: Safely inspect and repair unarchived Codex session provider and mis
 
 # Codex Session Repair
 
-Use this skill when Codex history shows provider errors involving `codex_local_access`, missing `call_id` heartbeat or cross-session notifications, or when the user asks to repair all affected unarchived sessions.
+Use this skill when Codex history shows provider errors involving `codex_local_access`, missing `call_id` heartbeat or cross-session notifications, stale paginated-history cache entries, or when the user asks to repair all affected unarchived sessions.
 
 ## Scope and invariants
 
@@ -14,6 +14,7 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
 - Keep model, title, directory, timestamps, archive state, ordinary messages, and all unmodified bytes unchanged.
 - For old-provider targets, change the database provider to `custom` only after the history preflight succeeds; explicitly selected `custom` targets keep their provider.
 - Rewrite only recognized missing-`call_id` heartbeat or cross-session notification records, including their `function_call_output`/`FunctionCallOutput` event representations, as ordinary user history messages. Preserve message IDs, notification text, and internal metadata; never invent a `call_id`.
+- Keep the paginated projection (`thread_history_1.sqlite`) consistent with those in-place JSONL rewrites. Only the matching `functionCallOutput` projection rows are changed to the corresponding `userMessage` item; create a projection backup and manifest before writing.
 - Require `[model_providers.custom]`, `model_provider="custom"`, and `wire_api="responses"` in `config.toml` before any apply.
 - Do not modify `config.toml` during repair. Do not repair archived sessions.
 
@@ -44,13 +45,26 @@ Use this skill when Codex history shows provider errors involving `codex_local_a
 3. After apply, confirm the report shows zero database old-provider rows, zero old provider headers, zero missing `call_id` notifications, zero unknown notifications, zero JSON errors, zero size mismatches, zero unchanged-region hash mismatches, and zero row mismatches.
    JSON and HTML reports are written beside the manifest; the HTML file can be opened directly in a browser.
 
-4. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
+4. For paginated sessions, synchronize the projection after the JSONL apply. Use explicit unarchived thread IDs only:
+
+   ```powershell
+   node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\sync-projection.cjs" --dry-run --thread <THREAD_ID>
+   node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\sync-projection.cjs" --apply --thread <THREAD_ID>
+   ```
+
+   The synchronizer refuses archived sessions, requires every old projection item to match a rewritten JSONL item, updates only those rows, validates SQLite integrity and leaves a rollback manifest. Roll back with:
+
+   ```powershell
+   node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\sync-projection.cjs" --rollback "<projection-manifest.json>"
+   ```
+
+5. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
 
    ```powershell
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\bulk-repair.cjs" --rollback "<manifest.json>"
    ```
 
-5. Keep all reports and backups local. Never commit `state_5.sqlite`, rollout JSONL files, manifests containing history, `config.toml`, API keys, or backup directories to a repository.
+6. Keep all reports and backups local. Never commit `state_5.sqlite`, `thread_history_1.sqlite`, rollout JSONL files, manifests containing history, `config.toml`, API keys, or backup directories to a repository.
 
 ## Boundaries
 
