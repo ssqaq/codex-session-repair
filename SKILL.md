@@ -1,11 +1,22 @@
 ---
 name: codex-session-repair
-description: Safely inspect, repair, and verify unarchived Codex session provider, missing call_id, stale projection, and poisoned continuation-state errors with dry-run, backups, rollback, and runtime diagnosis. Use for local Codex session maintenance; do not use for archived sessions or unrelated project code.
+description: 修复 Codex 未归档会话报错：旧 provider、缺少 call_id、分页缓存残留、续聊状态错误和中转站过载。自动检查、备份、修复、回滚并做真实续聊验证。只要用户提到 Codex 会话报错、续聊失败、function_call_output、previous_response_id，或要求批量修复未归档会话，就使用这个 Skill；不处理 plugin 401 登录问题、归档会话或项目代码。
 ---
 
-# Codex Session Repair
+# Codex 修复会话报错
 
-Use this skill when Codex history shows provider errors involving `codex_local_access`, missing `call_id` heartbeat or cross-session notifications, stale paginated-history cache entries, repeated `previous_response_id` continuation failures after static repair, or when the user asks to repair and verify affected unarchived sessions.
+这个 Skill 专门修复 Codex 左侧未归档会话里的常见报错。它会先检查，再备份和修改，最后真实续聊验证；只做静态扫描不算修好。
+
+## 看到什么报错怎么处理
+
+| 看到的内容 | 处理方式 |
+| --- | --- |
+| `codex_local_access`、provider 错误 | 把目标会话切到当前有效的 `custom` provider。 |
+| `function_call_output requires call_id`、缺少 `call_id` | 把已识别的心跳/跨会话通知改成普通用户历史消息，不伪造 `call_id`。 |
+| 静态检查通过，但 `previous_response_id` 仍续聊失败 | 诊断并刷新 Codex 运行态；必要时重启客户端或从已完成历史 fork 新 task。 |
+| `functionCallOutput` 出现在分页缓存里 | 同步 `thread_history_1.sqlite` 投影缓存。 |
+| `servers are currently overloaded` | 中转站过载，等待后重试，不继续改历史。 |
+| `plugin 401` | 这是登录问题；本 Skill 不登录、不索要账号，直接跳过。 |
 
 ## Scope and invariants
 
