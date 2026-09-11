@@ -10,3 +10,10 @@ archived-delete-*/
 reports/
 *.jsonl
 *.log
+auth.json*
+thread_history_*.sqlite*
+*.sqlite-wal
+*.sqlite-shm
+local-repair-*/
+__pycache__/
+*.pyc

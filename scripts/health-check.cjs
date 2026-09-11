@@ -96,6 +96,12 @@ function compactConfig(result) {
   };
 }
 
+function compactLocal(result) {
+  if (!result.ok) return result;
+  return { ok: true, ...result.value.summary, auth: result.value.checks.auth,
+    configSyntax: result.value.checks.configSyntax, damagedFiles: result.value.checks.histories };
+}
+
 function collectIssues(checks) {
   const issues = [];
   for (const [name, value] of Object.entries(checks)) {
@@ -115,6 +121,12 @@ function collectIssues(checks) {
   if (backups.ok && backups.deletableDirectories) issues.push({ kind: 'old-backups', count: backups.deletableDirectories, message: '存在可清理的旧重复备份' });
   const config = checks.config;
   if (config.ok && config.status !== 'healthy') issues.push({ kind: 'model-instructions-path', count: 1, message: config.reason || '模型指令文件路径需要修复' });
+  const local = checks.local;
+  if (local?.ok) {
+    if (local.auth.status !== 'healthy') issues.push({ kind: 'browser-auth', count: 1, message: '浏览器 OAuth 登录文件需检查（不会自动登录或覆盖）' });
+    if (local.configSyntax.status !== 'healthy') issues.push({ kind: 'config-syntax', count: 1, message: 'TOML 语法或项目路径需要修复' });
+    if (local.damagedHistories) issues.push({ kind: 'damaged-history', count: local.damagedHistories, message: '历史文件损坏，先查看逐文件隔离报告' });
+  }
   return issues;
 }
 
@@ -123,6 +135,7 @@ function chineseSummary(report) {
   const archived = report.checks.archived;
   const backups = report.checks.backups;
   const config = report.checks.config;
+  const local = report.checks.local;
   const status = report.status === 'healthy' ? '正常' : report.status === 'needs-attention' ? '发现待处理项' : '检查失败';
   return [
     `Codex 全会话检查：${status}`,
@@ -135,6 +148,13 @@ function chineseSummary(report) {
     `归档会话：${archived.ok ? archived.archivedThreads : '检查失败'}`,
     `可删旧备份：${backups.ok ? backups.deletableDirectories : '检查失败'}`,
     `模型指令路径：${config.ok ? (config.status === 'healthy' ? '正常' : config.status === 'repairable' ? '可修复' : '需人工确认') : '检查失败'}`,
+    ...(local ? [
+      `浏览器登录文件：${local.ok ? (local.auth.status === 'healthy' ? '存在（未验证在线登录）' : local.auth.status) : '检查失败'}`,
+      `TOML 语法/项目路径：${local.ok ? local.configSyntax.status : '检查失败'}`,
+      `损坏历史文件：${local.ok ? local.damagedHistories : '检查失败'}`,
+      `截断/非法 JSON 行：${local.ok ? local.invalidJsonLines : '检查失败'}`,
+      `NUL 填充行：${local.ok ? local.nulPaddingLines : '检查失败'}`,
+    ] : []),
     `数据库完整性：${sessions.ok ? sessions.databaseIntegrity : '检查失败'}`,
     `详细报告：${report.reportPath}`,
   ].join('\n');
@@ -164,6 +184,7 @@ function runSummary(reportPath) {
 function runHealthCheck(jsonOutput) {
   const startedAt = new Date().toISOString();
   const checks = {
+    local: compactLocal(runJsonScript('local-repair.cjs', ['--dry-run', '--all-unarchived'])),
     config: compactConfig(runJsonScript('config-repair.cjs', ['--dry-run', '--json'])),
     sessions: compactBulk(runJsonScript('bulk-repair.cjs', ['--dry-run', '--all-unarchived'])),
     archived: compactArchived(runJsonScript('delete-archived.cjs', ['--dry-run'])),
@@ -199,7 +220,8 @@ function main() {
   runHealthCheck(MODE === '--json');
 }
 
-try {
+module.exports = { compactLocal, collectIssues, chineseSummary };
+if (require.main === module) try {
   main();
 } catch (error) {
   process.stderr.write(`${error.stack || error.message}\n`);

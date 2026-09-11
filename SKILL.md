@@ -1,6 +1,6 @@
 ---
 name: codex-session-repair
-description: 检查、修复和清理 Codex 会话：一条命令扫描全部未归档会话并输出中文短报告，修复旧 provider、缺少 call_id、分页缓存、续聊状态和 model_instructions_file 路径错误，安全删除归档会话并清理重复回滚备份。用户提到 Codex 会话报错、全量检查、续聊失败、function_call_output、previous_response_id、模型指令文件、os error 123、删除归档会话或清理重复备份时使用；不处理 plugin 401 登录问题或项目代码。
+description: 检查、修复和清理本地 Codex 会话。用于旧 provider、缺少 call_id、续聊失败、模型指令路径或 TOML 错误、浏览器 auth token 不可用、JSONL 截断和 NUL 填充；可从本地备份恢复丢失的登录文件，隔离损坏历史，诊断 1210 内容类型不兼容，并清理归档和重复备份。不自动登录，不修改项目业务代码。
 ---
 
 # Codex 修复会话报错
@@ -32,8 +32,21 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\health-ch
 | 静态检查通过，但 `previous_response_id` 仍续聊失败 | 诊断并刷新 Codex 运行态；必要时重启客户端或从已完成历史 fork 新 task。 |
 | `functionCallOutput` 出现在分页缓存里 | 同步 `thread_history_1.sqlite` 投影缓存。 |
 | `failed to read model instructions file`、`os error 123` | 检查 `config.toml` 的 `model_instructions_file`；发现乱码、非法字符或失效路径时，先备份再改成唯一可读的 managed prompt 文件。 |
+| 浏览器 `auth token is unavailable`、`auth.json` 被改名 | 先运行 `local-repair.cjs --dry-run --auth`；仅在登录文件缺失且备份唯一可用时恢复，保留原备份，不覆盖已有登录文件。 |
+| `TOML parse error`、项目表头路径转义错误 | 使用 `local-repair.cjs --dry-run --config` 检查整个 TOML；指定实际存在的路径和行号后修复。 |
+| `Unterminated string in JSON`、NUL 填充、扫描中断 | 用 `local-repair.cjs --dry-run --all-unarchived` 汇总损坏文件，再逐会话恢复；不能补回的坏行须获授权后隔离。 |
+| `1210`、`messages.content.type ... ['text']` | 用 `diagnose-runtime.cjs` 识别内容格式不兼容，核对模型/服务商映射；不自动删除图片，也不当作 `call_id` 错误处理。 |
 | `servers are currently overloaded` | 中转站过载，等待后重试，不继续改历史。 |
-| `plugin 401` | 这是登录问题；本 Skill 不登录、不索要账号，直接跳过。 |
+| `plugin 401` | 不自动登录或索要账号；只有确认本地登录文件缺失时才检查可恢复的备份，其他 401 跳过。 |
+
+## 登录文件、配置语法与损坏历史
+
+遇到上表新增的登录文件、TOML 或 JSONL 损坏问题，先读 [references/local-recovery.md](references/local-recovery.md)。其中给出具体命令、修复范围、备份与回滚方法。
+
+1. 新检查需要 Python 3.11+，可用 `CODEX_REPAIR_PYTHON` 指定；健康检查会自动汇总登录文件、TOML 和当前登记历史文件的问题，一个坏文件不影响新检查扫描其他文件。
+2. `local-repair.cjs` 默认只读。实际修改只针对用户授权的对象，需关闭 Codex 后在外部终端执行，并传入 `--runtime-stopped`；更新 Skill 本身不等于授权修改真实会话。
+3. 历史恢复保留文件大小和正常记录的字节位置；完整原文留在本地备份。截断坏行只能隔离，不能称为恢复原文；`--quarantine-invalid` 需要用户已授权接受这种处理。
+4. 新命令通过后仍需真实续聊/浏览器列表验证，不能把 `validated-static` 报告当作在线恢复成功。
 
 ## 修复模型指令文件路径错误
 
@@ -90,7 +103,7 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-b
 
 - Work only on the local Codex home (`CODEX_ROOT`, default `C:\\Users\\Administrator\\.codex`). Never touch project source code.
 - Without a selector, the target set is re-read from `state_5.sqlite` at execution time: `archived=0 AND model_provider='codex_local_access'`. With explicit `--thread` or `--name`, an unarchived `custom` session is also eligible so recognized missing-`call_id` notifications can be repaired without changing its provider.
-- Keep model, title, directory, timestamps, archive state, ordinary messages, and all unmodified bytes unchanged.
+- Keep model, title, directory, timestamps, archive state, ordinary messages, and all unmodified bytes unchanged. The separate local history recovery may replace only reported damaged/padding lines with same-length empty usage events, with complete backups and explicit quarantine authorization for invalid JSON.
 - For old-provider targets, change the database provider to `custom` only after the history preflight succeeds; explicitly selected `custom` targets keep their provider.
 - Rewrite only recognized missing-`call_id` heartbeat or cross-session notification records, including their `function_call_output`/`FunctionCallOutput` event representations, as ordinary user history messages. Preserve message IDs, notification text, and internal metadata; never invent a `call_id`.
 - Keep the paginated projection (`thread_history_1.sqlite`) consistent with those in-place JSONL rewrites. Only the matching `functionCallOutput` projection rows are changed to the corresponding `userMessage` item; create a projection backup and manifest before writing.
@@ -145,7 +158,7 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-b
    node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\sync-projection.cjs" --rollback "<projection-manifest.json>"
    ```
 
-5. Diagnose the live continuation state before declaring success. Run `diagnose-runtime.cjs --thread <THREAD_ID>` after the static checks. If the latest turn is `call_id_continuation`, reload the Codex runtime by navigating away and back and perform one real no-tool continuation test. If the same error repeats, fork the completed history into a new task or restart the Codex desktop process; do not keep rewriting clean history. If the latest error is `upstream_overloaded`, wait and retry; it is not a local history repair failure. A repair is complete only when static checks and a real continuation test both pass.
+5. Diagnose the live continuation state before declaring success. Run `diagnose-runtime.cjs --thread <THREAD_ID>` after the static checks; it prefers the latest raw rollout turn over stale projection ordinals and does not revive older errors after a successful turn. If the latest turn is `call_id_continuation`, reload the Codex runtime by navigating away and back and perform one real no-tool continuation test. If the same error repeats, fork the completed history into a new task or restart the Codex desktop process; do not keep rewriting clean history. If the latest error is `upstream_overloaded`, wait and retry; a generic disconnected stream alone does not establish overload. For `unsupported_content_type`, follow the 1210 guidance in the local recovery reference. A repair is complete only when static checks and a real continuation test both pass.
 
 6. If validation fails or the user requests reversal, use the exact `manifest.json` emitted by that run:
 
@@ -157,4 +170,4 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-b
 
 ## Boundaries
 
-The featured-plugin 401 requires ChatGPT authentication and is independent of the local session repair. Treat it as a separately reported, user-skippable check; never request credentials or attempt login as part of this skill. Do not create automations unless the user separately asks for them.
+The featured-plugin 401 may require ChatGPT authentication. Local backup recovery only addresses a missing auth.json with an identifiable OAuth backup; it does not establish token validity on the server. Never request credentials or attempt login as part of this skill. Do not create automations unless the user separately asks for them.
