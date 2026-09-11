@@ -79,6 +79,23 @@ function compactBackups(result) {
   };
 }
 
+function compactConfig(result) {
+  if (!result.ok) return result;
+  const report = result.value;
+  return {
+    ok: true,
+    status: report.status || 'unknown',
+    modelInstructionsFile: report.modelInstructionsFile || null,
+    resolvedPath: report.resolvedPath || null,
+    invalidWindowsPath: Boolean(report.invalidWindowsPath),
+    exists: Boolean(report.exists),
+    readable: Boolean(report.readable),
+    proposedPath: report.proposedPath || null,
+    reason: report.reason || null,
+    detailReport: report.reportPath || null,
+  };
+}
+
 function collectIssues(checks) {
   const issues = [];
   for (const [name, value] of Object.entries(checks)) {
@@ -96,6 +113,8 @@ function collectIssues(checks) {
   if (archived.ok && archived.archivedThreads) issues.push({ kind: 'archived-threads', count: archived.archivedThreads, message: '存在可清理的归档会话' });
   const backups = checks.backups;
   if (backups.ok && backups.deletableDirectories) issues.push({ kind: 'old-backups', count: backups.deletableDirectories, message: '存在可清理的旧重复备份' });
+  const config = checks.config;
+  if (config.ok && config.status !== 'healthy') issues.push({ kind: 'model-instructions-path', count: 1, message: config.reason || '模型指令文件路径需要修复' });
   return issues;
 }
 
@@ -103,6 +122,7 @@ function chineseSummary(report) {
   const sessions = report.checks.sessions;
   const archived = report.checks.archived;
   const backups = report.checks.backups;
+  const config = report.checks.config;
   const status = report.status === 'healthy' ? '正常' : report.status === 'needs-attention' ? '发现待处理项' : '检查失败';
   return [
     `Codex 全会话检查：${status}`,
@@ -114,6 +134,7 @@ function chineseSummary(report) {
     `JSON 错误：${sessions.ok ? sessions.jsonErrors : '检查失败'}`,
     `归档会话：${archived.ok ? archived.archivedThreads : '检查失败'}`,
     `可删旧备份：${backups.ok ? backups.deletableDirectories : '检查失败'}`,
+    `模型指令路径：${config.ok ? (config.status === 'healthy' ? '正常' : config.status === 'repairable' ? '可修复' : '需人工确认') : '检查失败'}`,
     `数据库完整性：${sessions.ok ? sessions.databaseIntegrity : '检查失败'}`,
     `详细报告：${report.reportPath}`,
   ].join('\n');
@@ -143,6 +164,7 @@ function runSummary(reportPath) {
 function runHealthCheck(jsonOutput) {
   const startedAt = new Date().toISOString();
   const checks = {
+    config: compactConfig(runJsonScript('config-repair.cjs', ['--dry-run', '--json'])),
     sessions: compactBulk(runJsonScript('bulk-repair.cjs', ['--dry-run', '--all-unarchived'])),
     archived: compactArchived(runJsonScript('delete-archived.cjs', ['--dry-run'])),
     backups: compactBackups(runJsonScript('cleanup-backups.cjs', ['--dry-run'])),

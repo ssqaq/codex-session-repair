@@ -1,6 +1,6 @@
 ---
 name: codex-session-repair
-description: 检查、修复和清理 Codex 会话：一条命令扫描全部未归档会话并输出中文短报告，修复旧 provider、缺少 call_id、分页缓存和续聊状态错误，安全删除归档会话并清理重复回滚备份。用户提到 Codex 会话报错、全量检查、续聊失败、function_call_output、previous_response_id、删除归档会话或清理重复备份时使用；不处理 plugin 401 登录问题或项目代码。
+description: 检查、修复和清理 Codex 会话：一条命令扫描全部未归档会话并输出中文短报告，修复旧 provider、缺少 call_id、分页缓存、续聊状态和 model_instructions_file 路径错误，安全删除归档会话并清理重复回滚备份。用户提到 Codex 会话报错、全量检查、续聊失败、function_call_output、previous_response_id、模型指令文件、os error 123、删除归档会话或清理重复备份时使用；不处理 plugin 401 登录问题或项目代码。
 ---
 
 # Codex 修复会话报错
@@ -31,8 +31,31 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\health-ch
 | `function_call_output requires call_id`、缺少 `call_id` | 把已识别的心跳/跨会话通知改成普通用户历史消息，不伪造 `call_id`。 |
 | 静态检查通过，但 `previous_response_id` 仍续聊失败 | 诊断并刷新 Codex 运行态；必要时重启客户端或从已完成历史 fork 新 task。 |
 | `functionCallOutput` 出现在分页缓存里 | 同步 `thread_history_1.sqlite` 投影缓存。 |
+| `failed to read model instructions file`、`os error 123` | 检查 `config.toml` 的 `model_instructions_file`；发现乱码、非法字符或失效路径时，先备份再改成唯一可读的 managed prompt 文件。 |
 | `servers are currently overloaded` | 中转站过载，等待后重试，不继续改历史。 |
 | `plugin 401` | 这是登录问题；本 Skill 不登录、不索要账号，直接跳过。 |
+
+## 修复模型指令文件路径错误
+
+截图里常见的红框是配置文件把中文文件名写成乱码，或者路径里混进了 Windows 不允许的字符（例如 `?`）。先只检查：
+
+```powershell
+node .\scripts\config-repair.cjs --dry-run
+```
+
+如果结果是 `repairable`，执行修复。工具会备份整个 `config.toml`，只改 `model_instructions_file` 这一行，写完后马上重新读取文件验证：
+
+```powershell
+node .\scripts\config-repair.cjs --apply
+```
+
+需要撤销时使用输出的 manifest：
+
+```powershell
+node .\scripts\config-repair.cjs --rollback .\config-repair-...\manifest.json
+```
+
+它会优先使用 `managed-prompts\install-state.json` 指向的文件；没有安装记录时，只有找到唯一 `.md` 候选才会自动修复，候选不唯一就停下来，不会猜错文件。修完后重启 Codex 桌面端，让它重新加载配置。
 
 ## 清理归档会话和重复备份
 
@@ -71,8 +94,9 @@ node "$env:USERPROFILE\\.codex\\skills\\codex-session-repair\\scripts\\cleanup-b
 - For old-provider targets, change the database provider to `custom` only after the history preflight succeeds; explicitly selected `custom` targets keep their provider.
 - Rewrite only recognized missing-`call_id` heartbeat or cross-session notification records, including their `function_call_output`/`FunctionCallOutput` event representations, as ordinary user history messages. Preserve message IDs, notification text, and internal metadata; never invent a `call_id`.
 - Keep the paginated projection (`thread_history_1.sqlite`) consistent with those in-place JSONL rewrites. Only the matching `functionCallOutput` projection rows are changed to the corresponding `userMessage` item; create a projection backup and manifest before writing.
-- Require `[model_providers.custom]`, `model_provider="custom"`, and `wire_api="responses"` in `config.toml` before any apply.
-- Do not modify `config.toml` during repair. Do not repair archived sessions.
+- Require `[model_providers.custom]`, `model_provider="custom"`, and `wire_api="responses"` in `config.toml` before session repair apply.
+- `bulk-repair.cjs` does not modify `config.toml`; `config-repair.cjs` is the separate, explicit path repair command described above.
+- Do not repair archived sessions.
 - A clean JSONL/projection scan does not prove that a live Codex task is usable. Always classify the latest real turn as data corruption, poisoned runtime continuation state, or upstream overload.
 
 ## Procedure

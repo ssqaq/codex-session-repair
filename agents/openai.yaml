@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex 修复会话报错"
-  short_description: "全量检查并修复会话，输出中文报告并清理旧数据"
-  default_prompt: "使用 $codex-session-repair 一条命令检查全部 Codex 会话并输出中文摘要，按报告修复错误、清理归档和重复备份；跳过 plugin 401 登录问题。"
+  short_description: "检查并修复 Codex 会话和模型指令路径错误"
+  default_prompt: "使用 $codex-session-repair 检查 Codex 会话；遇到模型指令文件乱码、非法路径或 os error 123 时先备份再修复并验证，按报告处理其他会话错误、归档和重复备份；跳过 plugin 401 登录问题。"

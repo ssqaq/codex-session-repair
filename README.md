@@ -1,6 +1,6 @@
 # Codex 修复会话报错
 
-Version: `1.8.0`
+Version: `1.9.0`
 
 这是一个用来修复和清理 Codex 会话的 Skill。它会先检查，再备份和处理，最后验证结果。
 
@@ -11,6 +11,7 @@ Version: `1.8.0`
 - 分页缓存里的旧 `functionCallOutput`
 - `previous_response_id` 续聊状态污染
 - 判断 `servers are currently overloaded` 是否只是中转站过载
+- `model_instructions_file` 乱码、非法路径和 `os error 123`
 - 安全删除归档会话
 - 每个会话只保留最新回滚备份，清理旧的重复坏备份
 - 一条命令扫描全部未归档会话并输出中文短报告
@@ -31,6 +32,28 @@ node .\scripts\health-check.cjs --summary "<health-report.json>"
 ```
 
 退出码 `0` 表示正常，`2` 表示发现待处理项，`1` 表示检查本身失败。
+
+## 修复创建聊天时报模型指令文件错误
+
+如果看到 `failed to read model instructions file`、`feature override precedence` 或 `os error 123`，通常是 `config.toml` 里的模型指令文件路径被写成乱码，或者路径含有 Windows 禁止字符。先检查：
+
+```powershell
+node .\scripts\config-repair.cjs --dry-run
+```
+
+确认结果是 `repairable` 后执行：
+
+```powershell
+node .\scripts\config-repair.cjs --apply
+```
+
+工具会先备份 `config.toml`，只替换 `model_instructions_file` 这一行，并在写入后重新读取真实文件验证。撤销使用：
+
+```powershell
+node .\scripts\config-repair.cjs --rollback .\config-repair-...\manifest.json
+```
+
+修复后完全退出并重新打开 Codex，桌面端才会加载新路径。找不到唯一候选文件时工具会停止，不会随便猜一个 prompt。
 
 ## 最短操作
 
